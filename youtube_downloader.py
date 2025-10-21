@@ -599,4 +599,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.caption("Made with ❤️ • Pobiera tylko oryginalne transkrypty (bez generowania przez AI)")
+st.caption("TISM LABS 2025 ")
