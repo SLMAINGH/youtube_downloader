@@ -4,6 +4,9 @@ from datetime import datetime
 from typing import List, Dict
 import time
 import json
+import zipfile
+import io
+import re
 
 st.set_page_config(
     page_title="YouTube Transcript Downloader",
@@ -120,6 +123,70 @@ def fetch_transcript(api_key: str, video_id: str, lang: str, as_text: bool = Tru
             return None
     except Exception as e:
         return None
+
+def sanitize_filename(filename: str, max_length: int = 200) -> str:
+    """Sanitize filename to be safe for all operating systems"""
+    # Remove or replace invalid characters
+    # Invalid chars for Windows: < > : " / \ | ? *
+    # Also remove newlines and other control characters
+    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', filename)
+    
+    # Replace multiple spaces with single space
+    filename = re.sub(r'\s+', ' ', filename)
+    
+    # Remove leading/trailing spaces and dots (problematic on Windows)
+    filename = filename.strip(' .')
+    
+    # If filename is empty after sanitization, use a default
+    if not filename:
+        filename = "untitled"
+    
+    # Limit length (leave room for extension and video_id)
+    if len(filename) > max_length:
+        filename = filename[:max_length]
+    
+    return filename
+
+
+def create_transcripts_zip(transcripts: List[Dict], format: str = 'txt') -> bytes:
+    """Create a ZIP file with individual transcript files"""
+    zip_buffer = io.BytesIO()
+    
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for transcript in transcripts:
+            video_id = transcript['video_id']
+            lang = transcript['lang']
+            title = transcript.get('title', 'untitled')
+            
+            # Sanitize title for filename
+            safe_title = sanitize_filename(title)
+            
+            if format == 'txt':
+                # TXT format
+                content = transcript['transcript']
+                if isinstance(content, list):
+                    content = '\n'.join([str(item) for item in content])
+                
+                filename = f"{safe_title}_transcript_{lang}.txt"
+                zip_file.writestr(filename, str(content))
+                
+            elif format == 'json':
+                # JSON format
+                json_content = json.dumps({
+                    'video_id': video_id,
+                    'title': transcript['title'],
+                    'lang': lang,
+                    'all_langs': transcript['all_langs'],
+                    'transcript': transcript['transcript'],
+                    'url': f"https://youtube.com/watch?v={video_id}"
+                }, ensure_ascii=False, indent=2)
+                
+                filename = f"{safe_title}_transcript_{lang}.json"
+                zip_file.writestr(filename, json_content)
+    
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
 
 def filter_by_date(api_key: str, video_ids: List[str], target_date: datetime) -> List[Dict]:
     """Filter videos by upload date"""
@@ -493,21 +560,24 @@ if st.session_state.transcripts:
     st.header("📄 Pobrane transkrypty")
     
     # Download all transcripts
-    col1, col2 = st.columns(2)
+    st.subheader("📦 Pobierz wszystkie transkrypty")
+    
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        # As JSON
+        # As JSON (all in one file)
         json_data = json.dumps(st.session_state.transcripts, ensure_ascii=False, indent=2)
         st.download_button(
-            "📥 Pobierz wszystkie jako JSON",
+            "📥 Jeden JSON",
             json_data,
-            file_name="transcripts.json",
+            file_name="transcripts_all.json",
             mime="application/json",
-            use_container_width=True
+            use_container_width=True,
+            help="Wszystkie transkrypty w jednym pliku JSON"
         )
     
     with col2:
-        # As TXT (combined)
+        # As TXT (all in one file)
         txt_data = ""
         for t in st.session_state.transcripts:
             txt_data += f"{'='*80}\n"
@@ -524,11 +594,36 @@ if st.session_state.transcripts:
             txt_data += f"{transcript_content}\n\n\n"
         
         st.download_button(
-            "📥 Pobierz wszystkie jako TXT",
+            "📥 Jeden TXT",
             txt_data,
-            file_name="transcripts.txt",
+            file_name="transcripts_all.txt",
             mime="text/plain",
-            use_container_width=True
+            use_container_width=True,
+            help="Wszystkie transkrypty w jednym pliku TXT"
+        )
+    
+    with col3:
+        # As ZIP with individual TXT files
+        zip_txt = create_transcripts_zip(st.session_state.transcripts, format='txt')
+        st.download_button(
+            "📥 ZIP (TXT)",
+            zip_txt,
+            file_name="transcripts_txt.zip",
+            mime="application/zip",
+            use_container_width=True,
+            help="Każdy transkrypt jako osobny plik TXT w archiwum ZIP"
+        )
+    
+    with col4:
+        # As ZIP with individual JSON files
+        zip_json = create_transcripts_zip(st.session_state.transcripts, format='json')
+        st.download_button(
+            "📥 ZIP (JSON)",
+            zip_json,
+            file_name="transcripts_json.zip",
+            mime="application/zip",
+            use_container_width=True,
+            help="Każdy transkrypt jako osobny plik JSON w archiwum ZIP"
         )
     
     # Display individual transcripts
@@ -559,6 +654,9 @@ if st.session_state.transcripts:
             # Download buttons in columns
             col1, col2 = st.columns(2)
             
+            # Sanitize title for filename
+            safe_title = sanitize_filename(transcript['title'])
+            
             with col1:
                 # Individual download as TXT
                 transcript_text = transcript['transcript']
@@ -568,7 +666,7 @@ if st.session_state.transcripts:
                 st.download_button(
                     "📥 Pobierz jako TXT",
                     str(transcript_text),
-                    file_name=f"transcript_{transcript['video_id']}_{transcript['lang']}.txt",
+                    file_name=f"{safe_title}_transcript_{transcript['lang']}.txt",
                     mime="text/plain",
                     key=f"download_txt_{transcript['video_id']}",
                     use_container_width=True
@@ -588,7 +686,7 @@ if st.session_state.transcripts:
                 st.download_button(
                     "📥 Pobierz jako JSON",
                     individual_json,
-                    file_name=f"transcript_{transcript['video_id']}_{transcript['lang']}.json",
+                    file_name=f"{safe_title}_transcript_{transcript['lang']}.json",
                     mime="application/json",
                     key=f"download_json_{transcript['video_id']}",
                     use_container_width=True
@@ -599,4 +697,3 @@ else:
 
 # Footer
 st.markdown("---")
-st.caption("TISM LABS 2025 ")
