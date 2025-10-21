@@ -68,11 +68,8 @@ def fetch_video_metadata(api_key: str, video_id: str) -> Dict:
     else:
         return None
 
-def check_transcript_availability(api_key: str, video_id: str, preferred_langs: List[str]) -> Dict:
-    """Check if transcript is available in preferred languages"""
-    # First get video metadata to check available languages
-    metadata = fetch_video_metadata(api_key, video_id)
-    
+def check_transcript_availability(metadata: Dict, preferred_langs: List[str]) -> Dict:
+    """Check if transcript is available in preferred languages based on metadata"""
     if not metadata:
         return None
     
@@ -109,7 +106,16 @@ def fetch_transcript(api_key: str, video_id: str, lang: str, as_text: bool = Tru
         response = requests.get(url, headers=headers, params=params)
         
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            
+            # Convert content to string if it's a list
+            content = data.get('content', '')
+            if isinstance(content, list):
+                # If it's a list of segments with timestamps
+                content = '\n'.join([segment.get('text', '') for segment in content])
+            
+            data['content'] = content
+            return data
         else:
             return None
     except Exception as e:
@@ -442,8 +448,17 @@ if 'video_ids' in st.session_state and st.session_state.video_ids:
             for idx, video_id in enumerate(videos_to_process):
                 status_text.text(f"Przetwarzanie {idx + 1}/{len(videos_to_process)}: {video_id}")
                 
-                # Check availability
-                availability = check_transcript_availability(api_key, video_id, preferred_langs)
+                # Fetch metadata once
+                metadata = fetch_video_metadata(api_key, video_id)
+                
+                if not metadata:
+                    st.warning(f"⚠️ Nie udało się pobrać metadanych dla {video_id}")
+                    progress_bar.progress((idx + 1) / len(videos_to_process))
+                    time.sleep(0.3)
+                    continue
+                
+                # Check availability using already fetched metadata
+                availability = check_transcript_availability(metadata, preferred_langs)
                 
                 if availability and availability['available']:
                     # Fetch transcript
@@ -500,7 +515,13 @@ if st.session_state.transcripts:
             txt_data += f"Tytuł: {t['title']}\n"
             txt_data += f"Język: {t['lang']}\n"
             txt_data += f"{'='*80}\n\n"
-            txt_data += f"{t['transcript']}\n\n\n"
+            
+            # Convert to string if it's a list
+            transcript_content = t['transcript']
+            if isinstance(transcript_content, list):
+                transcript_content = '\n'.join([str(item) for item in transcript_content])
+            
+            txt_data += f"{transcript_content}\n\n\n"
         
         st.download_button(
             "📥 Pobierz wszystkie jako TXT",
@@ -521,25 +542,61 @@ if st.session_state.transcripts:
             st.write(f"**Link:** https://youtube.com/watch?v={transcript['video_id']}")
             
             st.markdown("**Transkrypt:**")
+            
+            # Convert to string if it's a list
+            display_transcript = transcript['transcript']
+            if isinstance(display_transcript, list):
+                display_transcript = '\n'.join([str(item) for item in display_transcript])
+            
             st.text_area(
                 "Transkrypt",
-                transcript['transcript'],
+                display_transcript,
                 height=300,
                 key=f"transcript_{transcript['video_id']}",
                 label_visibility="collapsed"
             )
             
-            # Individual download
-            st.download_button(
-                "📥 Pobierz ten transkrypt",
-                transcript['transcript'],
-                file_name=f"transcript_{transcript['video_id']}_{transcript['lang']}.txt",
-                mime="text/plain",
-                key=f"download_{transcript['video_id']}"
-            )
+            # Download buttons in columns
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Individual download as TXT
+                transcript_text = transcript['transcript']
+                if isinstance(transcript_text, list):
+                    transcript_text = '\n'.join([str(item) for item in transcript_text])
+                
+                st.download_button(
+                    "📥 Pobierz jako TXT",
+                    str(transcript_text),
+                    file_name=f"transcript_{transcript['video_id']}_{transcript['lang']}.txt",
+                    mime="text/plain",
+                    key=f"download_txt_{transcript['video_id']}",
+                    use_container_width=True
+                )
+            
+            with col2:
+                # Individual download as JSON
+                individual_json = json.dumps({
+                    'video_id': transcript['video_id'],
+                    'title': transcript['title'],
+                    'lang': transcript['lang'],
+                    'all_langs': transcript['all_langs'],
+                    'transcript': transcript['transcript'],
+                    'url': f"https://youtube.com/watch?v={transcript['video_id']}"
+                }, ensure_ascii=False, indent=2)
+                
+                st.download_button(
+                    "📥 Pobierz jako JSON",
+                    individual_json,
+                    file_name=f"transcript_{transcript['video_id']}_{transcript['lang']}.json",
+                    mime="application/json",
+                    key=f"download_json_{transcript['video_id']}",
+                    use_container_width=True
+                )
 
 else:
     st.info("👆 Najpierw pobierz listę filmików, a następnie kliknij 'Pobierz transkrypty'")
 
 # Footer
 st.markdown("---")
+st.caption("Made with ❤️ • Pobiera tylko oryginalne transkrypty (bez generowania przez AI)")
