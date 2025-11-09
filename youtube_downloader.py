@@ -7,9 +7,10 @@ import json
 import zipfile
 import io
 import re
+import google.generativeai as genai
 
 st.set_page_config(
-    page_title="YouTube Transcript Downloader",
+    page_title="YouTube Transcript Downloader & Analyzer",
     page_icon="📝",
     layout="wide"
 )
@@ -19,6 +20,8 @@ if 'results' not in st.session_state:
     st.session_state.results = []
 if 'transcripts' not in st.session_state:
     st.session_state.transcripts = []
+if 'analysis_result' not in st.session_state:
+    st.session_state.analysis_result = None
 
 def log_result(message: str):
     """Add message to results"""
@@ -28,6 +31,7 @@ def clear_results():
     """Clear results"""
     st.session_state.results = []
     st.session_state.transcripts = []
+    st.session_state.analysis_result = None
 
 def extract_video_id(url: str) -> str:
     """Extract video ID from YouTube URL"""
@@ -213,14 +217,177 @@ def filter_by_date(api_key: str, video_ids: List[str], target_date: datetime) ->
     progress_bar.empty()
     return filtered
 
+
+def analyze_transcripts_with_gemini(gemini_api_key: str, transcripts: List[Dict], analysis_language: str = "pl") -> Dict:
+    """Analyze transcripts using Gemini AI"""
+    
+    # Configure Gemini
+    genai.configure(api_key=gemini_api_key)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
+    # Combine transcripts
+    combined_text = ""
+    for t in transcripts:
+        combined_text += f"\n{'='*80}\n"
+        combined_text += f"Video: {t['title']}\n"
+        combined_text += f"ID: {t['video_id']}\n"
+        combined_text += f"Język: {t['lang']}\n"
+        combined_text += f"{'='*80}\n\n"
+        
+        transcript_content = t['transcript']
+        if isinstance(transcript_content, list):
+            transcript_content = '\n'.join([str(item) for item in transcript_content])
+        
+        combined_text += f"{transcript_content}\n\n"
+    
+    # Create universal prompt
+    prompt = f"""Przeanalizuj poniższe transkrypty wideo i wyciągnij z nich kluczowe informacje. Twoim celem jest stworzenie strukturalnej bazy wiedzy, która będzie użyteczna dla użytkownika.
+
+Transkrypty do analizy:
+---
+{combined_text}
+---
+
+Twoja odpowiedź **MUSI** być **TYLKO** w formacie JSON. Nie dołączaj żadnego tekstu przed otwarciem `{{` ani po zamknięciu `}}`.
+
+Obiekt JSON powinien zawierać następujące klucze:
+
+1. `overall_summary`: (String) Ogólne podsumowanie wszystkich przeanalizowanych transkryptów (3-5 zdań) w języku polskim.
+
+2. `main_topics`: (Array of Strings) Lista głównych tematów poruszanych we wszystkich transkryptach (5-10 tematów), w języku polskim.
+
+3. `videos_analysis`: (Array of Objects) Tablica obiektów, gdzie każdy element reprezentuje jeden video. Każdy obiekt **MUSI** zawierać:
+   * `video_id`: (String) ID wideo z YouTube
+   * `title`: (String) Tytuł wideo
+   * `summary`: (String) Zwięzłe podsumowanie treści tego konkretnego wideo (2-3 zdania), w języku polskim
+   * `key_points`: (Array of Strings) Lista najważniejszych punktów/wniosków z tego wideo (3-7 punktów), w języku polskim
+   * `topics`: (Array of Strings) Główne tematy poruszane w tym wideo, w języku polskim
+   * `entities`: (Object) Obiekty wspomniane w wideo, zawierający:
+     - `tools`: (Array of Strings) Wymienione narzędzia/platformy/aplikacje (zachowaj oryginalne nazwy w języku angielskim)
+     - `technologies`: (Array of Strings) Wymienione technologie/frameworki/języki (zachowaj oryginalne nazwy)
+     - `companies`: (Array of Strings) Wymienione firmy/marki
+     - `people`: (Array of Strings) Wymienione osoby (jeśli występują)
+   * `use_cases`: (Array of Objects, opcjonalne) Jeśli w wideo są omawiane konkretne przypadki użycia/strategie, każdy obiekt powinien zawierać:
+     - `problem`: (String) Opisany problem/wyzwanie, w języku polskim
+     - `solution`: (String) Zaproponowane rozwiązanie, w języku polskim
+     - `tools_used`: (Array of Strings) Narzędzia użyte w rozwiązaniu
+   * `actionable_insights`: (Array of Strings) Praktyczne wnioski/porady, które widz może wdrożyć (jeśli występują), w języku polskim
+   * `difficulty_level`: (String) Poziom trudności treści: "Beginner", "Intermediate", "Advanced"
+   * `tags`: (Array of Strings) Tagi kategoryzujące video (np. "Tutorial", "Strategy", "Review", "Case Study", "Tips"), w języku angielskim
+
+4. `common_patterns`: (Object) Wspólne wzorce/tematy występujące w wielu transkryptach:
+   * `recurring_tools`: (Array of Strings) Narzędzia wymieniane w wielu wideo
+   * `recurring_concepts`: (Array of Strings) Koncepcje/strategie pojawiające się wielokrotnie, w języku polskim
+   * `trends`: (Array of Strings) Zauważone trendy/tendencje, w języku polskim
+
+5. `metadata`: (Object) Metadane analizy:
+   * `total_videos`: (Number) Liczba przeanalizowanych wideo
+   * `total_words`: (Number) Przybliżona liczba słów we wszystkich transkryptach
+   * `analysis_date`: (String) Data analizy w formacie ISO
+   * `language`: (String) Język transkryptów
+
+Przykładowa struktura JSON:
+{{
+  "overall_summary": "Transkrypty koncentrują się na...",
+  "main_topics": ["Temat 1", "Temat 2", "Temat 3"],
+  "videos_analysis": [
+    {{
+      "video_id": "abc123",
+      "title": "Tytuł wideo",
+      "summary": "To wideo omawia...",
+      "key_points": ["Punkt 1", "Punkt 2"],
+      "topics": ["Temat A", "Temat B"],
+      "entities": {{
+        "tools": ["Tool1", "Tool2"],
+        "technologies": ["React", "Python"],
+        "companies": ["Company A"],
+        "people": []
+      }},
+      "use_cases": [
+        {{
+          "problem": "Jak rozwiązać problem X?",
+          "solution": "Użyj narzędzia Y aby...",
+          "tools_used": ["Tool Y", "Tool Z"]
+        }}
+      ],
+      "actionable_insights": ["Insight 1", "Insight 2"],
+      "difficulty_level": "Intermediate",
+      "tags": ["Tutorial", "Strategy"]
+    }}
+  ],
+  "common_patterns": {{
+    "recurring_tools": ["Tool A", "Tool B"],
+    "recurring_concepts": ["Koncepcja X", "Koncepcja Y"],
+    "trends": ["Trend 1", "Trend 2"]
+  }},
+  "metadata": {{
+    "total_videos": 5,
+    "total_words": 15000,
+    "analysis_date": "2025-11-09",
+    "language": "pl/en"
+  }}
+}}
+
+Upewnij się, że końcowy wynik to pojedynczy, poprawny obiekt JSON zaczynający się od `{{` i kończący się `}}`. 
+Odpowiadaj w języku polskim dla pól opisowych, ale zachowaj oryginalne angielskie nazwy dla narzędzi, technologii i tagów.
+Jeśli jakieś informacje nie występują w transkryptach (np. use_cases, people), użyj pustej tablicy [] lub odpowiednio oznacz ich brak.
+"""
+    
+    try:
+        # Generate response
+        response = model.generate_content(prompt)
+        
+        # Extract JSON from response
+        response_text = response.text.strip()
+        
+        # Remove markdown code blocks if present
+        if response_text.startswith("```json"):
+            response_text = response_text[7:]
+        if response_text.startswith("```"):
+            response_text = response_text[3:]
+        if response_text.endswith("```"):
+            response_text = response_text[:-3]
+        
+        response_text = response_text.strip()
+        
+        # Parse JSON
+        analysis_result = json.loads(response_text)
+        
+        return {
+            'success': True,
+            'data': analysis_result
+        }
+        
+    except json.JSONDecodeError as e:
+        return {
+            'success': False,
+            'error': f"Błąd parsowania JSON: {str(e)}",
+            'raw_response': response.text if 'response' in locals() else None
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f"Błąd analizy: {str(e)}"
+        }
+
+
 # Main App
-st.title("📝 YouTube Transcript Downloader")
+st.title("📝 YouTube Transcript Downloader & AI Analyzer")
 st.markdown("---")
 
 # API Key input
 with st.sidebar:
     st.header("⚙️ Konfiguracja")
-    api_key = st.text_input("Supadata API Key", type="password", help="lol xd")
+    api_key = st.text_input("Supadata API Key", type="password", help="Klucz API do pobierania transkryptów")
+    
+    st.markdown("---")
+    st.markdown("### 🤖 Gemini AI (opcjonalnie)")
+    gemini_api_key = st.text_input("Google Gemini API Key", type="password", help="Klucz API do analizy transkryptów przez AI")
+    
+    if gemini_api_key:
+        st.success("✅ Gemini API skonfigurowane - możesz analizować transkrypty!")
+    else:
+        st.info("ℹ️ Dodaj klucz Gemini aby włączyć analizę AI")
     
     st.markdown("---")
     st.markdown("### 🌐 Języki transkryptów")
@@ -239,10 +406,12 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 📚 Instrukcja")
     st.markdown("""
-    1. Wprowadź klucz API
-    2. Wybierz języki transkryptów
-    3. Wybierz tryb i pobierz filmy
-    4. Kliknij "Pobierz transkrypty"
+    1. Wprowadź klucz API Supadata
+    2. (Opcjonalnie) Dodaj klucz Gemini dla AI
+    3. Wybierz języki transkryptów
+    4. Wybierz tryb i pobierz filmy
+    5. Pobierz transkrypty
+    6. (Opcjonalnie) Analizuj przez AI
     """)
     
     st.markdown("---")
@@ -554,7 +723,273 @@ if 'video_ids' in st.session_state and st.session_state.video_ids:
             
             st.success(f"🎉 Pobrano {len(st.session_state.transcripts)} transkryptów!")
 
-# Display transcripts
+# AI ANALYSIS SECTION
+if st.session_state.transcripts and gemini_api_key:
+    st.markdown("---")
+    st.header("🤖 Analiza AI (Gemini)")
+    
+    st.info(f"📊 Masz {len(st.session_state.transcripts)} transkryptów gotowych do analizy")
+    
+    # Select transcripts to analyze
+    st.subheader("Wybierz transkrypty do analizy")
+    
+    analyze_all = st.checkbox("Analizuj wszystkie transkrypty", value=True)
+    
+    selected_indices = []
+    if not analyze_all:
+        st.write("Wybierz konkretne transkrypty:")
+        for idx, t in enumerate(st.session_state.transcripts):
+            if st.checkbox(f"{t['title'][:60]}... [{t['lang']}]", key=f"select_{idx}"):
+                selected_indices.append(idx)
+    else:
+        selected_indices = list(range(len(st.session_state.transcripts)))
+    
+    if selected_indices:
+        st.info(f"Wybrano {len(selected_indices)} transkrypt(ów) do analizy")
+        
+        if st.button("🚀 Analizuj przez Gemini AI", type="primary", use_container_width=True):
+            selected_transcripts = [st.session_state.transcripts[i] for i in selected_indices]
+            
+            with st.spinner(f"Analizowanie {len(selected_transcripts)} transkryptów przez Gemini AI... To może potrwać kilka minut."):
+                result = analyze_transcripts_with_gemini(gemini_api_key, selected_transcripts)
+                
+                if result['success']:
+                    st.session_state.analysis_result = result['data']
+                    st.success("✅ Analiza zakończona pomyślnie!")
+                else:
+                    st.error(f"❌ {result['error']}")
+                    if result.get('raw_response'):
+                        with st.expander("🔍 Zobacz surową odpowiedź"):
+                            st.text(result['raw_response'])
+    else:
+        st.warning("⚠️ Nie wybrano żadnych transkryptów do analizy")
+
+# Display AI Analysis Results
+if st.session_state.analysis_result:
+    st.markdown("---")
+    st.header("📊 Wyniki analizy AI")
+    
+    analysis = st.session_state.analysis_result
+    
+    # Overall Summary
+    st.subheader("📝 Ogólne podsumowanie")
+    st.write(analysis.get('overall_summary', 'Brak podsumowania'))
+    
+    # Main Topics
+    st.subheader("🎯 Główne tematy")
+    topics = analysis.get('main_topics', [])
+    if topics:
+        cols = st.columns(min(3, len(topics)))
+        for idx, topic in enumerate(topics):
+            with cols[idx % 3]:
+                st.info(f"🔹 {topic}")
+    
+    # Videos Analysis
+    st.subheader("🎬 Analiza poszczególnych wideo")
+    for video_analysis in analysis.get('videos_analysis', []):
+        with st.expander(f"📹 {video_analysis.get('title', 'Brak tytułu')}"):
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                st.write(f"**Video ID:** `{video_analysis.get('video_id', 'N/A')}`")
+                st.write(f"**Link:** https://youtube.com/watch?v={video_analysis.get('video_id', '')}")
+                st.write(f"**Poziom trudności:** {video_analysis.get('difficulty_level', 'N/A')}")
+            
+            with col2:
+                tags = video_analysis.get('tags', [])
+                if tags:
+                    st.write("**Tagi:**")
+                    for tag in tags:
+                        st.markdown(f"`{tag}`")
+            
+            st.markdown("---")
+            st.write("**Podsumowanie:**")
+            st.write(video_analysis.get('summary', 'Brak podsumowania'))
+            
+            # Key Points
+            key_points = video_analysis.get('key_points', [])
+            if key_points:
+                st.write("**Kluczowe punkty:**")
+                for point in key_points:
+                    st.markdown(f"• {point}")
+            
+            # Topics
+            video_topics = video_analysis.get('topics', [])
+            if video_topics:
+                st.write("**Tematy:**")
+                st.write(", ".join(video_topics))
+            
+            # Entities
+            entities = video_analysis.get('entities', {})
+            if entities:
+                st.write("**Wymienione elementy:**")
+                
+                entity_col1, entity_col2 = st.columns(2)
+                
+                with entity_col1:
+                    if entities.get('tools'):
+                        st.write("🔧 **Narzędzia:**")
+                        for tool in entities['tools']:
+                            st.markdown(f"• `{tool}`")
+                    
+                    if entities.get('technologies'):
+                        st.write("💻 **Technologie:**")
+                        for tech in entities['technologies']:
+                            st.markdown(f"• `{tech}`")
+                
+                with entity_col2:
+                    if entities.get('companies'):
+                        st.write("🏢 **Firmy:**")
+                        for company in entities['companies']:
+                            st.markdown(f"• {company}")
+                    
+                    if entities.get('people'):
+                        st.write("👤 **Osoby:**")
+                        for person in entities['people']:
+                            st.markdown(f"• {person}")
+            
+            # Use Cases
+            use_cases = video_analysis.get('use_cases', [])
+            if use_cases:
+                st.write("**💡 Przypadki użycia:**")
+                for idx, uc in enumerate(use_cases, 1):
+                    st.markdown(f"**{idx}. Problem:** {uc.get('problem', 'N/A')}")
+                    st.markdown(f"   **Rozwiązanie:** {uc.get('solution', 'N/A')}")
+                    if uc.get('tools_used'):
+                        st.markdown(f"   **Użyte narzędzia:** {', '.join(uc['tools_used'])}")
+                    st.markdown("")
+            
+            # Actionable Insights
+            insights = video_analysis.get('actionable_insights', [])
+            if insights:
+                st.write("**✨ Praktyczne wnioski:**")
+                for insight in insights:
+                    st.markdown(f"✅ {insight}")
+    
+    # Common Patterns
+    st.subheader("🔄 Wspólne wzorce")
+    patterns = analysis.get('common_patterns', {})
+    
+    pattern_col1, pattern_col2, pattern_col3 = st.columns(3)
+    
+    with pattern_col1:
+        recurring_tools = patterns.get('recurring_tools', [])
+        if recurring_tools:
+            st.write("**🔧 Powtarzające się narzędzia:**")
+            for tool in recurring_tools:
+                st.markdown(f"• `{tool}`")
+    
+    with pattern_col2:
+        recurring_concepts = patterns.get('recurring_concepts', [])
+        if recurring_concepts:
+            st.write("**💡 Powtarzające się koncepcje:**")
+            for concept in recurring_concepts:
+                st.markdown(f"• {concept}")
+    
+    with pattern_col3:
+        trends = patterns.get('trends', [])
+        if trends:
+            st.write("**📈 Trendy:**")
+            for trend in trends:
+                st.markdown(f"• {trend}")
+    
+    # Metadata
+    st.subheader("ℹ️ Metadane analizy")
+    metadata = analysis.get('metadata', {})
+    
+    meta_col1, meta_col2, meta_col3, meta_col4 = st.columns(4)
+    
+    with meta_col1:
+        st.metric("📹 Liczba wideo", metadata.get('total_videos', 0))
+    with meta_col2:
+        st.metric("📝 Liczba słów", f"{metadata.get('total_words', 0):,}")
+    with meta_col3:
+        st.metric("📅 Data analizy", metadata.get('analysis_date', 'N/A'))
+    with meta_col4:
+        st.metric("🌐 Język", metadata.get('language', 'N/A'))
+    
+    # Download Analysis Results
+    st.markdown("---")
+    st.subheader("📥 Pobierz wyniki analizy")
+    
+    analysis_json = json.dumps(analysis, ensure_ascii=False, indent=2)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.download_button(
+            "📥 Pobierz analizę (JSON)",
+            analysis_json,
+            file_name=f"ai_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+            use_container_width=True
+        )
+    
+    with col2:
+        # Create a formatted text version
+        text_report = f"""RAPORT ANALIZY AI - YouTube Transcripts
+Data: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+{'='*80}
+
+OGÓLNE PODSUMOWANIE
+{analysis.get('overall_summary', 'Brak')}
+
+GŁÓWNE TEMATY
+{chr(10).join([f"• {topic}" for topic in analysis.get('main_topics', [])])}
+
+{'='*80}
+
+ANALIZA WIDEO
+"""
+        for video in analysis.get('videos_analysis', []):
+            text_report += f"""
+{'='*80}
+TYTUŁ: {video.get('title', 'N/A')}
+VIDEO ID: {video.get('video_id', 'N/A')}
+POZIOM: {video.get('difficulty_level', 'N/A')}
+TAGI: {', '.join(video.get('tags', []))}
+
+PODSUMOWANIE:
+{video.get('summary', 'Brak')}
+
+KLUCZOWE PUNKTY:
+{chr(10).join([f"• {point}" for point in video.get('key_points', [])])}
+
+"""
+            if video.get('use_cases'):
+                text_report += "PRZYPADKI UŻYCIA:\n"
+                for idx, uc in enumerate(video['use_cases'], 1):
+                    text_report += f"{idx}. Problem: {uc.get('problem', 'N/A')}\n"
+                    text_report += f"   Rozwiązanie: {uc.get('solution', 'N/A')}\n"
+                text_report += "\n"
+        
+        text_report += f"""
+{'='*80}
+
+WSPÓLNE WZORCE
+
+Powtarzające się narzędzia:
+{chr(10).join([f"• {tool}" for tool in patterns.get('recurring_tools', [])])}
+
+Powtarzające się koncepcje:
+{chr(10).join([f"• {concept}" for concept in patterns.get('recurring_concepts', [])])}
+
+Trendy:
+{chr(10).join([f"• {trend}" for trend in patterns.get('trends', [])])}
+
+{'='*80}
+Koniec raportu
+"""
+        
+        st.download_button(
+            "📥 Pobierz raport (TXT)",
+            text_report,
+            file_name=f"ai_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
+
+# Display transcripts (original section)
 if st.session_state.transcripts:
     st.markdown("---")
     st.header("📄 Pobrane transkrypty")
@@ -694,6 +1129,3 @@ if st.session_state.transcripts:
 
 else:
     st.info("👆 Najpierw pobierz listę filmików, a następnie kliknij 'Pobierz transkrypty'")
-
-# Footer
-st.markdown("---")
