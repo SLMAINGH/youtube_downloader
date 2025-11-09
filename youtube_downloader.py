@@ -7,7 +7,6 @@ import json
 import zipfile
 import io
 import re
-import google.generativeai as genai
 
 st.set_page_config(
     page_title="YouTube Transcript Downloader & Analyzer",
@@ -219,11 +218,7 @@ def filter_by_date(api_key: str, video_ids: List[str], target_date: datetime) ->
 
 
 def analyze_transcripts_with_gemini(gemini_api_key: str, transcripts: List[Dict], analysis_language: str = "pl") -> Dict:
-    """Analyze transcripts using Gemini AI"""
-    
-    # Configure Gemini
-    genai.configure(api_key=gemini_api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    """Analyze transcripts using Gemini AI via HTTP requests"""
     
     # Combine transcripts
     combined_text = ""
@@ -334,11 +329,52 @@ Jeśli jakieś informacje nie występują w transkryptach (np. use_cases, people
 """
     
     try:
-        # Generate response
-        response = model.generate_content(prompt)
+        # Call Gemini API via HTTP request
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
         
-        # Extract JSON from response
-        response_text = response.text.strip()
+        headers = {
+            "Content-Type": "application/json",
+        }
+        
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt}
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 1,
+                "topK": 40,
+                "topP": 0.95,
+                "maxOutputTokens": 8192,
+            }
+        }
+        
+        params = {"key": gemini_api_key}
+        
+        response = requests.post(url, json=payload, params=params, headers=headers, timeout=60)
+        
+        if response.status_code != 200:
+            return {
+                'success': False,
+                'error': f"Błąd API Gemini: {response.status_code}",
+                'raw_response': response.text
+            }
+        
+        # Parse response
+        response_data = response.json()
+        
+        # Extract text from response
+        if 'candidates' not in response_data or not response_data['candidates']:
+            return {
+                'success': False,
+                'error': "Brak odpowiedzi od API Gemini",
+                'raw_response': json.dumps(response_data)
+            }
+        
+        response_text = response_data['candidates'][0]['content']['parts'][0]['text'].strip()
         
         # Remove markdown code blocks if present
         if response_text.startswith("```json"):
@@ -363,6 +399,11 @@ Jeśli jakieś informacje nie występują w transkryptach (np. use_cases, people
             'success': False,
             'error': f"Błąd parsowania JSON: {str(e)}",
             'raw_response': response.text if 'response' in locals() else None
+        }
+    except requests.exceptions.Timeout:
+        return {
+            'success': False,
+            'error': "Timeout: Żądanie trwało zbyt długo. Spróbuj z mniejszą liczbą transkryptów."
         }
     except Exception as e:
         return {
