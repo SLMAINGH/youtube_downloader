@@ -330,7 +330,7 @@ Jeśli jakieś informacje nie występują w transkryptach (np. use_cases, people
     
     try:
         # Call Gemini API via HTTP request
-        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
         
         headers = {
             "Content-Type": "application/json",
